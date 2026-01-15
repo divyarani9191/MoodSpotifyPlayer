@@ -1,116 +1,182 @@
 import time
 import random
 import speech_recognition as sr
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
+from transformers import pipeline
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+from pymongo import MongoClient
+from datetime import datetime
 
 # -------------------- Spotify Setup --------------------
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id="63ae557f57cd4e31aeb8bcc0db1673d8",         # <-- Your Client ID
-    client_secret="93cc866850954c41a38d0f5b16925a03",   # <-- Your Client Secret
+    client_id="63ae557f57cd4e31aeb8bcc0db1673d8",
+    client_secret="93cc866850954c41a38d0f5b16925a03",
     redirect_uri="http://127.0.0.1:8888/callback",
     scope="user-read-playback-state,user-modify-playback-state"
 ))
 
-# Mood → Bollywood Playlist mapping
+# -------------------- MongoDB Setup --------------------
+client = MongoClient("mongodb://localhost:27017/")
+db = client["EmoHeal"]
+collection = db["mood_music_history"]
+
+# -------------------- Mood → Playlist mapping --------------------
 mood_playlist = {
-    "happy": "spotify:playlist:3bQy66sMaRDIUIsS7UQnuO",    # Cheerful Bollywood hits
-    "sad": "spotify:playlist:37i9dQZF1DXdFesNN9TzXT",      # Sad Hindi melodies
-    "angry": "spotify:playlist:4jlbTgG7gqClTD2MjpUDqI",    # Intense Bollywood tracks
-    "neutral": "spotify:playlist:1b6Lj2j6z1cUg2WWsuGGk0",  # Calm / feel-good
-    "surprised": "spotify:playlist:6YAW8Q4YPBL1obegSiARTU",# Happy vibes
-    "fear": "spotify:playlist:00QmsX0u0NrSZsZbofJgsB"      # Soft / soothing tracks
+    "happy": "spotify:playlist:3bQy66sMaRDIUIsS7UQnuO",
+    "sad": "spotify:playlist:37i9dQZF1DXdFesNN9TzXT",
+    "angry": "spotify:playlist:4jlbTgG7gqClTD2MjpUDqI",
+    "neutral": "spotify:playlist:1b6Lj2j6z1cUg2WWsuGGk0",
+    "surprised": "spotify:playlist:6YAW8Q4YPBL1obegSiARTU",
+    "fear": "spotify:playlist:00QmsX0u0NrSZsZbofJgsB"
 }
 
-# -------------------- Voice to Text --------------------
+# -------------------- Voice Setup --------------------
 r = sr.Recognizer()
 mic = sr.Microphone()
 
+# -------------------- WAIT FOR COMMAND --------------------
+def wait_for_command():
+    while True:
+        with mic as source:
+            print("🛑 Say 'play music' or 'start music' to continue...")
+            r.adjust_for_ambient_noise(source)
+            audio = r.listen(source)
+
+        try:
+            command = r.recognize_google(audio).lower()
+            print("🗣 Command:", command)
+
+            if any(word in command for word in ["play", "start", "music"]):
+                print("✅ Command accepted\n")
+                return
+            else:
+                print("❌ Wrong command, try again\n")
+        except:
+            print("❌ Could not understand command\n")
+
+# -------------------- VOICE TO TEXT --------------------
 def get_voice_input():
     with mic as source:
-        print("🎤 Adjusting for ambient noise... please wait 1-2 seconds")
+        print("🎤 Speak how you feel...")
         r.adjust_for_ambient_noise(source)
-        print("🎤 Now listening! Speak something into the microphone...")
         audio = r.listen(source)
-        print("✅ Audio captured, processing...")
-        try:
-            text = r.recognize_google(audio)
-            print("📝 You said:", text)
-            return text
-        except sr.UnknownValueError:
-            print("❌ Could not understand voice. Try again.")
-            return ""
-        except sr.RequestError as e:
-            print(f"❌ Google API error: {e}")
-            return ""
 
-# -------------------- Mood Detection --------------------
-print("⬇️ Loading Hugging Face emotion model... this may take a minute")
+    try:
+        text = r.recognize_google(audio)
+        print("📝 You said:", text)
+        return text
+    except:
+        print("❌ Could not understand voice")
+        return ""
 
-model_name = "mrm8488/t5-base-finetuned-emotion"
-tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
-classifier = TextClassificationPipeline(model=model, tokenizer=tokenizer, return_all_scores=False)
+# -------------------- MOOD DETECTION --------------------
+print("⬇️ Loading emotion model...")
+classifier = pipeline(
+    "text-classification",
+    model="bhadresh-savani/distilbert-base-uncased-emotion",
+    return_all_scores=True  # Get all scores for reliable detection
+)
 
 def detect_mood(text):
+    text = text.strip()
     if text == "":
         return "neutral"
-    result = classifier(text)
-    mood = result[0]['label'].lower()
-    print("🔮 Detected mood:", mood)
-    if mood in ["joy", "happy", "excited"]:
+
+    # Pad very short inputs to help model
+    if len(text.split()) < 2:
+        text += " ."
+
+    results = classifier(text)[0]  # List of dicts with 'label' and 'score'
+    print("🔮 Raw model output (all scores):", results)
+
+    # Pick the label with max score
+    label = max(results, key=lambda x: x['score'])['label'].lower()
+
+    # Map model labels to our moods
+    if label == "joy":
         return "happy"
-    elif mood in ["sad", "disappointed"]:
+    elif label == "sadness":
         return "sad"
-    elif mood in ["anger", "angry", "annoyed"]:
+    elif label == "anger":
         return "angry"
-    elif mood in ["surprise", "amazed"]:
+    elif label == "surprise":
         return "surprised"
-    elif mood in ["fear", "anxious"]:
+    elif label == "fear":
         return "fear"
     else:
         return "neutral"
 
-# -------------------- Spotify — Random Track Playback --------------------
+# -------------------- PLAY MUSIC --------------------
 def get_playlist_tracks(playlist_uri):
-    """Fetch all track URIs from a playlist"""
-    results = sp.playlist_items(playlist_uri, fields="items.track.uri,total", additional_types=['track'])
-    track_uris = [item['track']['uri'] for item in results['items'] if item['track']]
-    return track_uris
+    tracks = []
+    results = sp.playlist_items(playlist_uri)
+    while results:
+        for item in results['items']:
+            if item['track'] and item['track']['uri']:
+                tracks.append(item['track']['uri'])
+        if results['next']:
+            results = sp.next(results)
+        else:
+            results = None
+    return tracks
 
 def play_song_by_mood(mood):
     playlist_uri = mood_playlist.get(mood, mood_playlist["neutral"])
-    devices = sp.devices()
-    if len(devices['devices']) == 0:
-        print("⚠️ No active Spotify device found. Open Spotify on your device!")
+    tracks = get_playlist_tracks(playlist_uri)
+
+    if not tracks:
+        print(f"⚠️ No tracks found for mood '{mood}'")
         return
 
-    device_id = devices['devices'][0]['id']
-
-    # Get all tracks from playlist
-    track_uris = get_playlist_tracks(playlist_uri)
-    if not track_uris:
-        print("⚠️ No tracks found in playlist!")
+    devices = sp.devices()['devices']
+    if not devices:
+        print("⚠️ Open Spotify on any device first")
         return
 
-    # Pick a random track
-    random_track = random.choice(track_uris)
-    sp.start_playback(device_id=device_id, uris=[random_track])
-    print(f"🎵 Playing a random {mood} Bollywood song...")
+    # Use first active device
+    device_id = devices[0]['id']
+    # Optionally transfer playback to this device
+    sp.transfer_playback(device_id=device_id, force_play=True)
 
-# -------------------- Continuous Listening --------------------
+    # Play a random track
+    song = random.choice(tracks)
+    sp.start_playback(device_id=device_id, uris=[song])
+    print(f"🎵 Playing {mood} song: {song}\n")
+
+    # -------------------- SAVE TO DATABASE --------------------
+    data = {
+        "mood": mood,
+        "song_uri": song,
+        "timestamp": datetime.now()
+    }
+    collection.insert_one(data)
+    print("💾 Mood & song saved to database")
+
+# -------------------- MAIN LOOP --------------------
 def main():
-    print("🎶 Bollywood Mood-Based Spotify Player Started")
+    print("🎶 Mood-Based Spotify Player Started\n")
     while True:
+        wait_for_command()
         text = get_voice_input()
         mood = detect_mood(text)
+        print(f"✨ Detected mood: {mood}\n")
         play_song_by_mood(mood)
-        print("⏳ Waiting for next voice input...\n")
+        print("🛑 Say command again to change song\n")
         time.sleep(2)
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
 
 
 
