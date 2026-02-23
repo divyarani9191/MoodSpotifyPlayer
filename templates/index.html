@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Emotion Music Player</title>
+
+<style>
+body {
+    margin: 0;
+    font-family: 'Segoe UI', sans-serif;
+    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+    color: white;
+    text-align: center;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.container {
+    background: rgba(255,255,255,0.08);
+    padding: 50px;
+    border-radius: 20px;
+    backdrop-filter: blur(20px);
+    box-shadow: 0 0 40px rgba(0,0,0,0.4);
+    width: 400px;
+}
+
+h1 {
+    margin-bottom: 30px;
+}
+
+button {
+    background: linear-gradient(45deg, #00c853, #00e676);
+    border: none;
+    padding: 15px 40px;
+    font-size: 18px;
+    border-radius: 50px;
+    color: white;
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+button:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 20px #00e676;
+}
+
+.result {
+    margin-top: 30px;
+    font-size: 18px;
+}
+</style>
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <h1>🎧 Emotion Music Player</h1>
+
+    <button onclick="detectMood()">🎤 Speak</button>
+
+    <div class="loader" id="loader"></div>
+
+    <div class="result" id="result"></div>
+</div>
+
+<script>
+function detectMood() {
+    const resultBox = document.getElementById("result");
+    const loader = document.getElementById("loader");
+
+    resultBox.classList.remove("show");
+    loader.style.display = "block";
+    resultBox.innerHTML = "Listening...";
+
+    fetch("/detect")
+    .then(res => res.json())
+    .then(data => {
+        loader.style.display = "none";
+
+        if (data.status === "ok") {
+            resultBox.innerHTML =
+                "😊 Mood: <b>" + data.mood + "</b><br>" +
+                "🎵 Playing: <b>" + data.song + "</b><br>" +
+                "👤 Artist: <b>" + data.artist + "</b>";
+        }
+        else if (data.status === "no_voice") {
+            resultBox.innerHTML = "❌ Voice not detected";
+        }
+        else if (data.status === "no_song") {
+            resultBox.innerHTML = "❌ No song found";
+        }
+        else {
+            resultBox.innerHTML = "⚠️ Something went wrong";
+        }
+
+        resultBox.classList.add("show");
+    })
+    .catch(() => {
+        loader.style.display = "none";
+        resultBox.innerHTML = "⚠️ Server not running";
+        resultBox.classList.add("show");
+    });
+}
+</script>
+
+</body>
+</html>
